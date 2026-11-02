@@ -8,7 +8,7 @@ Your AI agent changed 37 files. Do you remember why?
     agentledger undo last
 
 ## Demo
-<video src="https://raw.githubusercontent.com/Rafax01x/agentledger/main/demo.mp4" controls width="100%"></video>
+<video src="https://github.com/Rafax01x/agentledger/raw/main/demo.mp4" controls width="100%"></video>
 
 ## Install
 
