@@ -1,0 +1,17 @@
+# Built binary
+/agentledger
+
+# Release binaries (built locally, attached to GitHub releases, not committed)
+/dist/
+
+# agentledger session data (created by `agentledger init` in a repo)
+.agentledger/
+
+# Go build/test artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Editor / OS artifacts
+.DS_Store
