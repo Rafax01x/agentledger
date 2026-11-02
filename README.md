@@ -10,22 +10,18 @@ Your AI agent changed 37 files. Do you remember why?
 ## Install
 
 1. Download a prebuilt binary from the latest release at
-   https://github.com/<user>/agentledger/releases/latest,
+   https://github.com/Rafax01x/agentledger/releases/latest,
    choose the binary for your operating system and
    architecture, make it executable, and put it on your PATH.
 2. Or install with Go:
-   `go install github.com/<user>/agentledger/cmd/agentledger@latest`
+   `go install github.com/Rafax01x/agentledger/cmd/agentledger@latest`
 3. Or build from source (requires Go >= 1.22 and a `git` binary):
 
 ```sh
-git clone https://github.com/<user>/agentledger.git
+git clone https://github.com/Rafax01x/agentledger.git
 cd agentledger
 go build -o agentledger ./cmd/agentledger
 ```
-
-Replace `<user>` with the GitHub username that hosts the
-repository; the module itself is the bare `agentledger`
-path, and no remote was specified in the original spec.
 
 ## Quickstart
 
