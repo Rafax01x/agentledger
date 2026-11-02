@@ -7,6 +7,9 @@ Your AI agent changed 37 files. Do you remember why?
     agentledger run -- claude
     agentledger undo last
 
+## Demo
+![Demo](demo.mp4)
+
 ## Install
 
 1. Download a prebuilt binary from the latest release at
