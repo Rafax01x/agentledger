@@ -166,8 +166,22 @@ func ChangedSinceSession(root, startRef, endRef string, paths []string) ([]strin
 //
 // The tool's own .agentledger/ directory is excluded from the snapshot
 // (via a pathspec), otherwise the snapshot would recursively include
-// agentledger's own database and temp files.
+// agentledger's own database and temp files. .env files are excluded
+// too: a snapshot must never become a second copy of a secret, even
+// when the user's .env is unignored — the redaction story promises
+// the .env file itself is never stored, and the snapshot tree is
+// storage. (A tracked .env still contributes its committed HEAD
+// version via read-tree, but never working-tree secret edits.)
 func Snapshot(root, id, name string) (string, error) {
+	return SnapshotWithIgnores(root, id, name, nil)
+}
+
+// SnapshotWithIgnores is Snapshot, plus one ":!<pattern>" pathspec
+// per ignore pattern. Git pathspecs do not exclude every glob shape
+// (for example a pattern that only matches a base name), so callers
+// that need a guarantee must also filter the recorded changes; the
+// pathspec is a best-effort snapshot-level exclusion.
+func SnapshotWithIgnores(root, id, name string, ignores []string) (string, error) {
 	head, err := Head(root)
 	if err != nil {
 		return "", err
@@ -182,7 +196,13 @@ func Snapshot(root, id, name string) (string, error) {
 	if _, err := run(root, env, "read-tree", "HEAD"); err != nil {
 		return "", err
 	}
-	if _, err := run(root, env, "add", "-A", "--", ":!.agentledger"); err != nil {
+	args := []string{"add", "-A", "--", ":!.agentledger", ":!.env", ":!**/.env"}
+	for _, pattern := range ignores {
+		if pattern != "" {
+			args = append(args, ":!"+pattern)
+		}
+	}
+	if _, err := run(root, env, args...); err != nil {
 		return "", err
 	}
 	tree, err := run(root, env, "write-tree")
@@ -270,6 +290,38 @@ func ChangedFilesStatus(root, fromRef, toRef string) ([]FileChange, error) {
 		changes = append(changes, FileChange{Type: typ, Path: path})
 	}
 	return changes, nil
+}
+
+// DiffStat counts added and deleted lines in a unified diff. The
+// "--- " and "+++ " file headers are not lines, and "Binary files
+// differ" lines contain neither, so they contribute nothing.
+func DiffStat(diff string) (added, deleted int) {
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+		case strings.HasPrefix(line, "+"):
+			added++
+		case strings.HasPrefix(line, "-"):
+			deleted++
+		}
+	}
+	return added, deleted
+}
+
+// DeleteSessionRefs deletes a session's start and end snapshot refs.
+// A ref that does not exist is skipped, so cleaning a session whose
+// refs were already pruned is not an error.
+func DeleteSessionRefs(root, id string) error {
+	for _, name := range []string{"start", "end"} {
+		ref := "refs/agentledger/" + id + "/" + name
+		if _, err := RefCommit(root, ref); err != nil {
+			continue
+		}
+		if _, err := run(root, nil, "update-ref", "-d", ref); err != nil {
+			return fmt.Errorf("delete ref %s: %w", ref, err)
+		}
+	}
+	return nil
 }
 
 // Restore checks out the given paths from ref into the working tree.

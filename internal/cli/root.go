@@ -14,7 +14,7 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.AddCommand(initCmd, doctorCmd, runCmd, logCmd, showCmd, exportCmd, undoCmd)
+	rootCmd.AddCommand(initCmd, doctorCmd, runCmd, logCmd, showCmd, exportCmd, undoCmd, diffCmd, cleanCmd, uiCmd)
 }
 
 // Execute runs the root command and returns any error to main,

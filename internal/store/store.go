@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -28,7 +29,12 @@ CREATE TABLE IF NOT EXISTS sessions (
 	start_ref TEXT NOT NULL DEFAULT '',
 	end_ref TEXT NOT NULL DEFAULT '',
 	files_changed INTEGER NOT NULL DEFAULT 0,
-	undone_at TEXT
+	undone_at TEXT,
+	lines_added INTEGER,
+	lines_deleted INTEGER,
+	input_tokens INTEGER,
+	output_tokens INTEGER,
+	cost_usd REAL
 );
 CREATE TABLE IF NOT EXISTS actions (
 	id TEXT PRIMARY KEY,
@@ -51,7 +57,10 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
 `
 
-// Session is one wrapped agent run.
+// Session is one wrapped agent run. LinesAdded, LinesDeleted,
+// InputTokens, OutputTokens, and CostUSD are nil for sessions
+// recorded before v0.2 or by agents that report no metrics: nil
+// means "not reported", never zero.
 type Session struct {
 	ID           string
 	Agent        string
@@ -65,6 +74,11 @@ type Session struct {
 	EndRef       string
 	FilesChanged int
 	UndoneAt     *time.Time
+	LinesAdded   *int
+	LinesDeleted *int
+	InputTokens  *int64
+	OutputTokens *int64
+	CostUSD      *float64
 }
 
 // Action is one file change recorded for a session.
@@ -103,6 +117,21 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema to %s: %w (check that the file is a valid agentledger database and writable)", path, err)
 	}
+	// Migrations for databases created before v0.2: add the
+	// telemetry columns. "duplicate column name" means the column
+	// is already there and is not an error; any other error is.
+	for _, alter := range []string{
+		`ALTER TABLE sessions ADD COLUMN lines_added INTEGER`,
+		`ALTER TABLE sessions ADD COLUMN lines_deleted INTEGER`,
+		`ALTER TABLE sessions ADD COLUMN input_tokens INTEGER`,
+		`ALTER TABLE sessions ADD COLUMN output_tokens INTEGER`,
+		`ALTER TABLE sessions ADD COLUMN cost_usd REAL`,
+	} {
+		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("migrate database %s: %w", path, err)
+		}
+	}
 	return &Store{db: db}, nil
 }
 
@@ -138,13 +167,30 @@ func nullableInt(v sql.NullInt64) *int {
 	return &n
 }
 
+func nullableInt64(v sql.NullInt64) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	n := v.Int64
+	return &n
+}
+
+func nullableFloat(v sql.NullFloat64) *float64 {
+	if !v.Valid {
+		return nil
+	}
+	f := v.Float64
+	return &f
+}
+
 // CreateSession inserts a new session row.
 func (s *Store) CreateSession(sess *Session) error {
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (id, agent, command, cwd, started_at, ended_at, duration_ms, exit_code, start_ref, end_ref, files_changed, undone_at)
-		 VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, NULL)`,
+		`INSERT INTO sessions (id, agent, command, cwd, started_at, ended_at, duration_ms, exit_code, start_ref, end_ref, files_changed, undone_at, lines_added, lines_deleted, input_tokens, output_tokens, cost_usd)
+		 VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
 		sess.ID, sess.Agent, sess.Command, sess.Cwd, formatTime(sess.StartedAt),
-		sess.DurationMs, sess.StartRef, sess.EndRef, sess.FilesChanged)
+		sess.DurationMs, sess.StartRef, sess.EndRef, sess.FilesChanged,
+		sess.LinesAdded, sess.LinesDeleted, sess.InputTokens, sess.OutputTokens, sess.CostUSD)
 	if err != nil {
 		return fmt.Errorf("create session %s: %w", sess.ID, err)
 	}
@@ -156,10 +202,11 @@ func scanSession(row interface {
 }) (*Session, error) {
 	var sess Session
 	var started, ended, undone sql.NullString
-	var exitCode sql.NullInt64
+	var exitCode, linesAdded, linesDeleted, inputTokens, outputTokens sql.NullInt64
+	var costUSD sql.NullFloat64
 	if err := row.Scan(&sess.ID, &sess.Agent, &sess.Command, &sess.Cwd, &started,
 		&ended, &sess.DurationMs, &exitCode, &sess.StartRef, &sess.EndRef,
-		&sess.FilesChanged, &undone); err != nil {
+		&sess.FilesChanged, &undone, &linesAdded, &linesDeleted, &inputTokens, &outputTokens, &costUSD); err != nil {
 		return nil, err
 	}
 	t, err := parseTime(started.String)
@@ -174,13 +221,18 @@ func scanSession(row interface {
 	if sess.UndoneAt, err = nullableTime(undone); err != nil {
 		return nil, err
 	}
+	sess.LinesAdded = nullableInt(linesAdded)
+	sess.LinesDeleted = nullableInt(linesDeleted)
+	sess.InputTokens = nullableInt64(inputTokens)
+	sess.OutputTokens = nullableInt64(outputTokens)
+	sess.CostUSD = nullableFloat(costUSD)
 	return &sess, nil
 }
 
 // GetSession returns one session by id.
 func (s *Store) GetSession(id string) (*Session, error) {
 	row := s.db.QueryRow(
-		`SELECT id, agent, command, cwd, started_at, ended_at, duration_ms, exit_code, start_ref, end_ref, files_changed, undone_at
+		`SELECT id, agent, command, cwd, started_at, ended_at, duration_ms, exit_code, start_ref, end_ref, files_changed, undone_at, lines_added, lines_deleted, input_tokens, output_tokens, cost_usd
 		 FROM sessions WHERE id = ?`, id)
 	sess, err := scanSession(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -194,7 +246,7 @@ func (s *Store) GetSession(id string) (*Session, error) {
 
 // ListSessions returns sessions newest first. A limit <= 0 means no limit.
 func (s *Store) ListSessions(limit int) ([]*Session, error) {
-	query := `SELECT id, agent, command, cwd, started_at, ended_at, duration_ms, exit_code, start_ref, end_ref, files_changed, undone_at
+	query := `SELECT id, agent, command, cwd, started_at, ended_at, duration_ms, exit_code, start_ref, end_ref, files_changed, undone_at, lines_added, lines_deleted, input_tokens, output_tokens, cost_usd
 		FROM sessions ORDER BY started_at DESC, id DESC`
 	var rows *sql.Rows
 	var err error
@@ -219,10 +271,18 @@ func (s *Store) ListSessions(limit int) ([]*Session, error) {
 }
 
 // FinishSession fills in a session's end fields after a run completes.
+// Telemetry is nil: use FinishSessionWithMetrics when line counts or
+// token/cost figures are known.
 func (s *Store) FinishSession(id string, endedAt time.Time, durationMs int64, exitCode int, endRef string, filesChanged int) error {
+	return s.FinishSessionWithMetrics(id, endedAt, durationMs, exitCode, endRef, filesChanged, nil, nil, nil, nil, nil)
+}
+
+// FinishSessionWithMetrics is FinishSession plus the v0.2 telemetry
+// fields. Nil metric pointers are stored as NULL (not reported).
+func (s *Store) FinishSessionWithMetrics(id string, endedAt time.Time, durationMs int64, exitCode int, endRef string, filesChanged int, linesAdded, linesDeleted *int, inputTokens, outputTokens *int64, costUSD *float64) error {
 	res, err := s.db.Exec(
-		`UPDATE sessions SET ended_at = ?, duration_ms = ?, exit_code = ?, end_ref = ?, files_changed = ? WHERE id = ?`,
-		formatTime(endedAt), durationMs, exitCode, endRef, filesChanged, id)
+		`UPDATE sessions SET ended_at = ?, duration_ms = ?, exit_code = ?, end_ref = ?, files_changed = ?, lines_added = ?, lines_deleted = ?, input_tokens = ?, output_tokens = ?, cost_usd = ? WHERE id = ?`,
+		formatTime(endedAt), durationMs, exitCode, endRef, filesChanged, linesAdded, linesDeleted, inputTokens, outputTokens, costUSD, id)
 	if err != nil {
 		return fmt.Errorf("finish session %s: %w", id, err)
 	}
@@ -248,6 +308,63 @@ func (s *Store) MarkUndone(id string, undoneAt time.Time) error {
 	}
 	if n == 0 {
 		return fmt.Errorf("%w: %s", ErrSessionNotFound, id)
+	}
+	return nil
+}
+
+// DeleteSession removes a session and its actions and events, in
+// one transaction so a failure cannot leave orphaned rows. It
+// returns ErrSessionNotFound when the session id is unknown.
+func (s *Store) DeleteSession(id string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("delete session %s: %w", id, err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM events WHERE session_id = ?`, id); err != nil {
+		return fmt.Errorf("delete events for session %s: %w", id, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM actions WHERE session_id = ?`, id); err != nil {
+		return fmt.Errorf("delete actions for session %s: %w", id, err)
+	}
+	res, err := tx.Exec(`DELETE FROM sessions WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete session %s: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: %s", ErrSessionNotFound, id)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete session %s: %w", id, err)
+	}
+	return nil
+}
+
+// SessionStoredBytes estimates the bytes a session occupies in the
+// database: the sum of its action diffs and event lines. It is an
+// estimate (index and page overhead are excluded), used by clean to
+// report what pruning removes.
+func (s *Store) SessionStoredBytes(id string) (int64, error) {
+	var total int64
+	err := s.db.QueryRow(
+		`SELECT COALESCE((SELECT SUM(LENGTH(diff)) FROM actions WHERE session_id = ?), 0)
+		 + COALESCE((SELECT SUM(LENGTH(line)) FROM events WHERE session_id = ?), 0)`,
+		id, id).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("stored bytes for session %s: %w", id, err)
+	}
+	return total, nil
+}
+
+// Vacuum rewrites the database file, returning freed pages to the
+// operating system so clean's reclaimed-space figure is real.
+func (s *Store) Vacuum() error {
+	if _, err := s.db.Exec(`VACUUM`); err != nil {
+		return fmt.Errorf("vacuum database: %w", err)
 	}
 	return nil
 }

@@ -195,7 +195,7 @@ func TestRunRedactsSecretsBeforePersist(t *testing.T) {
 	res, err := session.Run(session.Config{
 		Root: root, Cwd: root, Agent: "sh",
 		Command: []string{"sh", "-c", "echo key=" + awsKey + "; echo token=" + ghToken + " > token.txt"},
-		Env: os.Environ(), Stdout: &stdout, Stderr: &stderr, Store: st,
+		Env:     os.Environ(), Stdout: &stdout, Stderr: &stderr, Store: st,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -255,5 +255,85 @@ func TestRunMissingCommandRecords127(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "executable file not found") {
 		t.Fatalf("stderr should explain the missing binary, got %q", stderr.String())
+	}
+}
+
+func TestRunAppliesConfigIgnoreAndEnvRedaction(t *testing.T) {
+	root, dbPath := setupRepo(t)
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	secret := "configenvsecret777"
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("API_KEY="+secret+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".agentledger.yaml"), []byte("ignore_paths:\n  - \"ignored.txt\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	res, err := session.Run(session.Config{
+		Root: root, Cwd: root, Agent: "sh",
+		Command: []string{"sh", "-c", "echo leaked=" + secret + "; echo kept > kept.txt; echo ignored > ignored.txt"},
+		Env:     os.Environ(), Stdout: &stdout, Stderr: &stderr, Store: st,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions, err := st.ListActions(res.Session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range actions {
+		if a.Path == "ignored.txt" {
+			t.Fatalf("ignored file must not be recorded: %+v", actions)
+		}
+	}
+	found := false
+	for _, a := range actions {
+		if a.Path == "kept.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("kept.txt action missing: %+v", actions)
+	}
+	events, err := st.ListEvents(res.Session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range events {
+		if strings.Contains(e.Line, secret) {
+			t.Fatalf("env secret leaked in stored event: %q", e.Line)
+		}
+	}
+}
+
+func TestRunRecordsTelemetry(t *testing.T) {
+	root, dbPath := setupRepo(t)
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var stdout, stderr bytes.Buffer
+	res, err := session.Run(session.Config{
+		Root: root, Cwd: root, Agent: "sh",
+		Command: []string{"sh", "-c", "echo '{\"input_tokens\": 100, \"output_tokens\": 20}'; echo 'total cost: $0.011'; echo one >> a.txt; echo two >> a.txt"},
+		Env:     os.Environ(), Stdout: &stdout, Stderr: &stderr, Store: st,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := res.Session
+	if sess.LinesAdded == nil || *sess.LinesAdded != 2 || sess.LinesDeleted == nil || *sess.LinesDeleted != 0 {
+		t.Fatalf("lines = %+v/%+v, want +2 -0", sess.LinesAdded, sess.LinesDeleted)
+	}
+	if sess.InputTokens == nil || *sess.InputTokens != 100 || sess.OutputTokens == nil || *sess.OutputTokens != 20 {
+		t.Fatalf("tokens = %+v/%+v", sess.InputTokens, sess.OutputTokens)
+	}
+	if sess.CostUSD == nil || *sess.CostUSD != 0.011 {
+		t.Fatalf("cost = %+v, want 0.011", sess.CostUSD)
 	}
 }

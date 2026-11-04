@@ -1,0 +1,42 @@
+# GoReleaser configuration for agentledger.
+# Release flow: push a tag like v0.2.0 and the release workflow
+# builds cross-platform binaries and attaches them to the GitHub
+# release. The binary's --version string is the Version constant in
+# internal/cli/messages.go; bump it before tagging a release.
+version: 2
+
+builds:
+  - main: ./cmd/agentledger
+    binary: agentledger
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+    # Windows arm64 needs no extra flags; modernc.org/sqlite is
+    # pure Go, so no cgo toolchain is required on any target.
+
+archives:
+  - name_template: "agentledger_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"

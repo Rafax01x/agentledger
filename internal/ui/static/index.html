@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentLedger // Dev Inspector</title>
+<style>
+  :root {
+    --bg-base: #07080B;
+    --surface: rgba(13, 15, 20, 0.85);
+    --surface-hover: rgba(22, 26, 35, 0.9);
+    --border: rgba(255, 255, 255, 0.07);
+    --border-focus: rgba(0, 255, 136, 0.4);
+    --text-main: #F3F4F6;
+    --text-muted: #8E95A5;
+    --accent: #00FF88;
+    --accent-dim: rgba(0, 255, 136, 0.1);
+    --danger: #EF4444;
+    --danger-dim: rgba(239, 68, 68, 0.1);
+    --warn: #FFB020;
+    --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background-color: var(--bg-base);
+    color: var(--text-main);
+    font-family: var(--font-mono);
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    height: 56px;
+    min-height: 56px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 0 20px;
+    background: var(--surface);
+    backdrop-filter: blur(12px);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 14px; letter-spacing: -0.5px; white-space: nowrap; }
+  .brand span { color: var(--accent); }
+  .live-badge { font-size: 11px; padding: 3px 8px; background: var(--accent-dim); color: var(--accent); border-radius: 4px; border: 1px solid rgba(0, 255, 136, 0.2); white-space: nowrap; }
+  .live-badge.off { background: var(--danger-dim); color: var(--danger); border-color: rgba(239, 68, 68, 0.3); }
+  .header-right { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+  .workspace { display: flex; flex: 1; height: calc(100vh - 56px); overflow: hidden; }
+  sidebar { width: 340px; min-width: 280px; border-right: 1px solid var(--border); background: rgba(9, 11, 15, 0.6); display: flex; flex-direction: column; }
+  .search-box { padding: 12px; border-bottom: 1px solid var(--border); }
+  .search-box input { width: 100%; background: var(--bg-base); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; color: var(--text-main); font-family: var(--font-mono); font-size: 12px; outline: none; transition: border-color 0.2s; }
+  .search-box input:focus { border-color: var(--border-focus); }
+  .session-count { padding: 8px 12px 0; font-size: 11px; color: var(--text-muted); }
+  .session-list { flex: 1; overflow-y: auto; padding: 8px; }
+  .session-item { padding: 12px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; margin-bottom: 4px; transition: all 0.15s ease; }
+  .session-item:hover { background: var(--surface-hover); }
+  .session-item.active { background: var(--surface-hover); border-color: var(--border-focus); }
+  .session-cmd { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .session-id { font-size: 12px; font-weight: 600; color: var(--accent); margin-top: 4px; }
+  .session-meta { font-size: 11px; color: var(--text-muted); margin-top: 4px; display: flex; justify-content: space-between; gap: 8px; }
+  .st-ok { color: var(--accent); }
+  .st-failed { color: var(--danger); }
+  .st-undone { color: var(--warn); }
+  .st-running { color: var(--text-muted); }
+  main { flex: 1; display: flex; flex-direction: column; background: var(--bg-base); overflow: hidden; }
+  .panel-header { padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--surface); display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+  .panel-header h3 { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 640px; }
+  .panel-header p { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .panel-header p.meta-line { margin-top: 6px; }
+  .action-btn { background: var(--danger-dim); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); padding: 6px 14px; border-radius: 6px; font-family: var(--font-mono); font-size: 12px; cursor: pointer; transition: all 0.2s; white-space: nowrap; }
+  .action-btn:hover { background: var(--danger); color: #fff; }
+  .tab-bar { display: flex; border-bottom: 1px solid var(--border); background: rgba(13, 15, 20, 0.4); padding: 0 24px; align-items: center; gap: 8px; }
+  .tab { padding: 10px 16px; font-size: 12px; color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent; }
+  .tab.active { color: var(--text-main); border-bottom-color: var(--accent); }
+  .seg { margin-left: auto; display: flex; gap: 4px; padding: 6px 0; }
+  .seg button { background: transparent; color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-family: var(--font-mono); font-size: 11px; cursor: pointer; }
+  .seg button.on { color: var(--accent); border-color: var(--border-focus); }
+  .panel-body { flex: 1; overflow-y: auto; padding: 24px; }
+  .diff-container { background: #040507; border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-size: 12px; white-space: pre-wrap; line-height: 1.5; word-break: break-word; }
+  .line-add { color: var(--accent); background: var(--accent-dim); display: block; }
+  .line-del { color: var(--danger); background: var(--danger-dim); display: block; }
+  .diff-file { margin-bottom: 16px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .diff-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; background: rgba(255, 255, 255, 0.03); }
+  .diff-head h4 { font-size: 12px; margin: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+  .diff-body { padding: 12px; font-size: 12px; line-height: 1.5; }
+  .diff-file.collapsed .diff-body { display: none; }
+  .chev { color: var(--text-muted); font-size: 12px; }
+  .mini-btn { background: transparent; color: var(--text-main); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 6px; padding: 4px 8px; font-family: var(--font-mono); font-size: 11px; cursor: pointer; white-space: nowrap; }
+  table.split { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  table.split td { vertical-align: top; padding: 1px 8px; width: 50%; white-space: pre-wrap; word-break: break-word; }
+  table.split td.old { color: #FF8A8A; }
+  table.split td.new { color: #7DFFB8; }
+  table.split td.ctx { color: #C9CDD3; }
+  .log-line.stderr { color: #FFB4B4; }
+  .empty { color: var(--text-muted); padding: 40px; text-align: center; font-size: 12px; }
+  .hint { color: var(--text-muted); font-size: 11px; }
+  #modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.7); align-items: center; justify-content: center; z-index: 10; }
+  #modal { background: rgba(13, 15, 20, 0.95); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 8px; padding: 24px; max-width: 480px; width: calc(100% - 48px); }
+  #modal h2 { margin-top: 0; font-size: 14px; margin-bottom: 8px; }
+  #modal p { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+  #modal-files { font-size: 12px; color: var(--text-muted); margin: 12px 0; white-space: pre-wrap; word-break: break-all; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row label { font-size: 12px; }
+  button.secondary { background: transparent; color: var(--text-main); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 6px; padding: 6px 14px; font-family: var(--font-mono); font-size: 12px; cursor: pointer; }
+  #modal-error { color: var(--danger); font-size: 12px; min-height: 18px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span>//</span> AGENTLEDGER <div class="live-badge off" id="live-badge">DISCONNECTED</div></div>
+  <div class="header-right"><span id="repo-path"></span><span id="port-label"></span></div>
+</header>
+<div class="workspace">
+  <sidebar>
+    <div class="search-box">
+      <input type="text" id="searchInput" placeholder="Filter sessions (Cmd+K)...">
+    </div>
+    <div class="session-count" id="session-count"></div>
+    <div class="session-list" id="sessionList"></div>
+  </sidebar>
+  <main>
+    <div class="panel-header">
+      <div style="min-width:0">
+        <h3 id="selectedTitle">Select a Session</h3>
+        <p id="selectedSub">Inspect changes, diffs, and terminal outputs.</p>
+        <p id="selectedMeta" class="meta-line"></p>
+      </div>
+      <button class="action-btn" id="revertBtn" style="display:none;">Revert Session</button>
+    </div>
+    <div class="tab-bar">
+      <div class="tab active" id="tab-diff">Git Diffs</div>
+      <div class="tab" id="tab-logs">Redacted Logs</div>
+      <span class="seg" id="view-seg">
+        <button id="view-unified" class="on">Unified</button><button id="view-split">Split</button>
+      </span>
+    </div>
+    <div class="panel-body">
+      <div id="diffView" class="diff-container">Select a session from the sidebar to inspect telemetry.</div>
+      <div id="logsView" style="display:none;">
+        <div class="row" style="margin-bottom:12px"><span class="seg" style="margin-left:0">
+          <button data-stream="all" class="on">All</button><button data-stream="stdout">stdout</button><button data-stream="stderr">stderr</button>
+        </span></div>
+        <div id="logsBody" class="diff-container">Terminal output stream will appear here...</div>
+      </div>
+    </div>
+  </main>
+</div>
+<div id="modal-backdrop">
+  <div id="modal">
+    <h2 id="modal-title">Revert session?</h2>
+    <p id="modal-text">This restores the working tree to before this session, using the same rules as agentledger undo. Files changed after the session ended block the revert unless force is checked.</p>
+    <div id="modal-files"></div>
+    <label class="row"><input type="checkbox" id="force-check"> Force (overwrite later changes)</label>
+    <p id="modal-error"></p>
+    <div class="row" style="margin-top:16px">
+      <button class="action-btn" id="confirm-undo">Revert</button>
+      <button class="secondary" id="cancel-undo">Cancel</button>
+    </div>
+  </div>
+</div>
+<script>
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+let sessions = [], current = null, detail = null, view = 'unified', streamFilter = 'all', tab = 'diff';
+let pendingFiles = null;
+const collapsed = new Set();
+function filtered() {
+  const q = (document.getElementById('searchInput').value || '').toLowerCase();
+  return sessions.filter(s => (s.id + ' ' + s.command + ' ' + s.agent).toLowerCase().includes(q));
+}
+function setConn(ok) {
+  const b = document.getElementById('live-badge');
+  b.className = 'live-badge' + (ok ? '' : ' off');
+  b.textContent = ok ? 'SYSTEM ACTIVE' : 'DISCONNECTED';
+}
+async function load() {
+  try {
+    const meta = await (await fetch('/api/meta')).json();
+    document.getElementById('repo-path').textContent = meta.root || '';
+    document.getElementById('port-label').textContent = meta.port ? '  |  PORT: ' + meta.port : '';
+    document.getElementById('session-count').textContent = meta.sessions + ' sessions';
+    sessions = await (await fetch('/api/sessions')).json();
+    setConn(true);
+  } catch (e) {
+    setConn(false);
+    sessions = [];
+  }
+  renderList();
+  if (sessions.length && !current) select(sessions[0].id);
+}
+function renderList() {
+  const list = document.getElementById('sessionList');
+  list.innerHTML = '';
+  filtered().forEach(s => {
+    const d = document.createElement('div');
+    d.className = 'session-item' + (current === s.id ? ' active' : '');
+    d.innerHTML = '<div class="session-cmd">' + esc(s.command || '(no command)') + '</div>' +
+      '<div class="session-id">' + esc(s.id.slice(0, 16)) + '</div>' +
+      '<div class="session-meta"><span class="st-' + s.status + '">' + s.status + '</span><span>' + esc(s.agent) + ' | ' + s.duration_ms + ' ms | ' + esc(s.started_at.slice(0, 19).replace('T', ' ')) + '</span></div>';
+    d.onclick = () => select(s.id);
+    list.appendChild(d);
+  });
+}
+async function select(id) {
+  current = id;
+  renderList();
+  const r = await fetch('/api/sessions/' + encodeURIComponent(id));
+  if (!r.ok) {
+    document.getElementById('selectedTitle').textContent = 'Session not found.';
+    document.getElementById('diffView').textContent = 'Session not found.';
+    document.getElementById('revertBtn').style.display = 'none';
+    return;
+  }
+  detail = await r.json();
+  renderDetail();
+}
+function renderDiffUnified(diff) {
+  return diff.split('\n').map(l => {
+    let cls = '';
+    if (l.startsWith('+') && !l.startsWith('+++')) cls = 'line-add';
+    else if (l.startsWith('-') && !l.startsWith('---')) cls = 'line-del';
+    return '<div class="' + cls + '">' + esc(l) + '</div>';
+  }).join('');
+}
+function renderDiffSplit(diff) {
+  const lines = diff.split('\n');
+  let rows = '', left = [], right = [];
+  const flush = () => {
+    const n = Math.max(left.length, right.length);
+    for (let i = 0; i < n; i++) rows += '<tr><td class="old">' + esc(left[i] || '') + '</td><td class="new">' + esc(right[i] || '') + '</td></tr>';
+    left = []; right = [];
+  };
+  for (const l of lines) {
+    if (l.startsWith('diff ') || l.startsWith('index ') || l.startsWith('--- ') || l.startsWith('+++ ') || l.startsWith('@@')) {
+      flush();
+      rows += '<tr><td colspan="2" class="ctx">' + esc(l) + '</td></tr>';
+    } else if (l.startsWith('-')) left.push(l);
+    else if (l.startsWith('+')) right.push(l);
+    else { flush(); rows += '<tr><td class="ctx">' + esc(l) + '</td><td class="ctx">' + esc(l) + '</td></tr>'; }
+  }
+  flush();
+  return '<table class="split">' + rows + '</table>';
+}
+function openModal(files) {
+  pendingFiles = files;
+  if (files) {
+    document.getElementById('modal-title').textContent = 'Revert file?';
+    document.getElementById('modal-text').textContent = 'This restores one file to before this session, using the same rules as agentledger undo with a file flag.';
+    document.getElementById('modal-files').textContent = files.join('\n');
+  } else {
+    document.getElementById('modal-title').textContent = 'Revert session?';
+    document.getElementById('modal-text').textContent = 'This restores the working tree to before this session, using the same rules as agentledger undo. Files changed after the session ended block the revert unless force is checked.';
+    const paths = detail.actions.map(a => a.path);
+    document.getElementById('modal-files').textContent = paths.length ? paths.slice(0, 20).join('\n') + (paths.length > 20 ? '\nand ' + (paths.length - 20) + ' more' : '') : 'No files changed.';
+  }
+  document.getElementById('modal-error').textContent = '';
+  document.getElementById('force-check').checked = false;
+  document.getElementById('modal-backdrop').style.display = 'flex';
+}
+function closeModal() { document.getElementById('modal-backdrop').style.display = 'none'; }
+function switchTab(t) {
+  tab = t;
+  document.getElementById('tab-diff').className = 'tab' + (t === 'diff' ? ' active' : '');
+  document.getElementById('tab-logs').className = 'tab' + (t === 'logs' ? ' active' : '');
+  document.getElementById('diffView').style.display = t === 'diff' ? 'block' : 'none';
+  document.getElementById('logsView').style.display = t === 'logs' ? 'block' : 'none';
+  document.getElementById('view-seg').style.display = t === 'diff' ? 'flex' : 'none';
+}
+function renderDetail() {
+  const s = detail.session;
+  const lines = (s.lines_added != null && s.lines_deleted != null) ? ('+' + s.lines_added + ' / -' + s.lines_deleted) : 'n/a';
+  let meta = esc(s.agent) + ' | ' + s.duration_ms + ' ms | exit ' + (s.exit_code == null ? '?' : s.exit_code) +
+    ' | ' + s.files_changed + ' files | lines ' + lines;
+  if (s.input_tokens != null) meta += ' | in ' + s.input_tokens + ' tok';
+  if (s.output_tokens != null) meta += ' | out ' + s.output_tokens + ' tok';
+  if (s.cost_usd != null) meta += ' | $' + s.cost_usd.toFixed(4);
+  document.getElementById('selectedTitle').textContent = s.command || s.id;
+  document.getElementById('selectedSub').textContent = s.id + ' | ' + s.status + ' | started ' + s.started_at;
+  document.getElementById('selectedMeta').textContent = meta;
+  document.getElementById('revertBtn').style.display = 'block';
+  let files = detail.actions.map(a => {
+    const isCollapsed = collapsed.has(a.path);
+    return '<div class="diff-file' + (isCollapsed ? ' collapsed' : '') + '" data-path="' + esc(a.path) + '">' +
+      '<div class="diff-head"><span class="chev">' + (isCollapsed ? '>' : 'v') + '</span><h4>' + esc(a.path) + ' (' + esc(a.type) + ') <span style="color:#00FF88">+' + a.added + '</span> <span style="color:#EF4444">-' + a.deleted + '</span></h4>' +
+      '<button class="mini-btn" data-revert="' + esc(a.path) + '">Revert File</button></div>' +
+      '<div class="diff-body">' + (view === 'unified' ? renderDiffUnified(a.diff) : renderDiffSplit(a.diff)) + '</div></div>';
+  }).join('');
+  document.getElementById('diffView').innerHTML = files || '<div class="empty">No files changed.</div>';
+  const logs = detail.events.filter(e => streamFilter === 'all' || e.stream === streamFilter)
+    .map(e => '<div class="log-line ' + esc(e.stream) + '">[' + esc(e.stream) + '] ' + esc(e.line) + '</div>').join('');
+  document.getElementById('logsBody').innerHTML = logs || '<span style="color:#8E95A5">No output for this filter.</span>';
+  document.querySelectorAll('.diff-head').forEach(h => {
+    h.onclick = (ev) => {
+      if (ev.target.closest('[data-revert]')) return;
+      const p = h.parentElement.dataset.path;
+      if (collapsed.has(p)) collapsed.delete(p); else collapsed.add(p);
+      renderDetail();
+    };
+  });
+  document.querySelectorAll('[data-revert]').forEach(b => {
+    b.onclick = (ev) => { ev.stopPropagation(); openModal([b.dataset.revert]); };
+  });
+}
+document.getElementById('searchInput').addEventListener('input', renderList);
+document.getElementById('tab-diff').onclick = () => switchTab('diff');
+document.getElementById('tab-logs').onclick = () => switchTab('logs');
+document.getElementById('view-unified').onclick = () => { view = 'unified'; document.getElementById('view-unified').className = 'on'; document.getElementById('view-split').className = ''; if (detail) renderDetail(); };
+document.getElementById('view-split').onclick = () => { view = 'split'; document.getElementById('view-split').className = 'on'; document.getElementById('view-unified').className = ''; if (detail) renderDetail(); };
+document.querySelectorAll('[data-stream]').forEach(b => { b.onclick = () => { streamFilter = b.dataset.stream; document.querySelectorAll('[data-stream]').forEach(x => x.className = x.dataset.stream === streamFilter ? 'on' : ''); if (detail) renderDetail(); }; });
+document.getElementById('revertBtn').onclick = () => openModal(null);
+document.getElementById('cancel-undo').onclick = closeModal;
+document.getElementById('confirm-undo').onclick = async () => {
+  const force = document.getElementById('force-check').checked;
+  const body = { force };
+  if (pendingFiles) body.files = pendingFiles;
+  const r = await fetch('/api/sessions/' + encodeURIComponent(current) + '/undo', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const resp = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    document.getElementById('modal-error').textContent = (r.status === 409 ? 'Blocked: working tree changed after this session. Check force to overwrite, or revert those edits first. ' : '') + (resp.error || 'Undo failed.');
+    return;
+  }
+  closeModal();
+  await load();
+  await select(current);
+};
+document.addEventListener('keydown', (e) => {
+  const modalOpen = document.getElementById('modal-backdrop').style.display === 'flex';
+  if (modalOpen) { if (e.key === 'Escape') closeModal(); return; }
+  const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
+  if (typing) { if (e.key === 'Escape') e.target.blur(); return; }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); document.getElementById('searchInput').focus(); return; }
+  if (e.key === '/') { e.preventDefault(); document.getElementById('searchInput').focus(); return; }
+  if (e.key === 'j' || e.key === 'k') {
+    const list = filtered();
+    const idx = list.findIndex(s => s.id === current);
+    const next = e.key === 'j' ? idx + 1 : idx - 1;
+    if (next >= 0 && next < list.length) select(list[next].id);
+    return;
+  }
+  if (e.key === 'u' && current && detail) { openModal(null); return; }
+});
+load();
+</script>
+</body>
+</html>

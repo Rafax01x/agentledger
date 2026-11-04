@@ -314,3 +314,132 @@ Ambiguities resolved with the simplest option, per the spec's
   but they no longer match Slack's secret-scanning format.
   No real secret was ever in the repo — these were always
   synthetic test examples.
+
+## v0.2 upgrades
+
+- **Config as YAML/JSON, parsed without a new dependency.**
+  The v0.1 stack named TOML config, but no TOML library is in
+  go.mod and adding one for three fields would be the heaviest
+  part of the feature. `internal/config` instead reads
+  `.agentledger.yaml` (a documented small subset: top-level keys,
+  string lists, booleans, name/regex maps) or `.agentledger.json`
+  (full JSON). A malformed config fails the run loudly: silently
+  recording unredacted output because of a config typo would be
+  worse than refusing.
+- **`.env` masking threshold of 6 characters.** Values of 6 or
+  fewer characters (ports, flags, short words) are too generic to
+  mask: masking them would corrupt ordinary output and produce
+  false confidence. Only longer exact values are masked, and the
+  `.env` file itself is never copied or stored.
+- **Ignore patterns enforced at the recorded-action level.**
+  Git pathspec exclusions (`:!pattern`) are passed to the
+  snapshot's `git add`, but not every glob shape excludes via
+  pathspec, so `session.Run` also filters recorded actions by
+  `MatchIgnore`. The guarantee that matters — ignored files never
+  appear in diffs or undo — holds regardless of pathspec quirks.
+- **Undo shared between CLI and UI, not duplicated.** The undo
+  command's RunE was refactored into `runUndo`, called by both
+  `agentledger undo` and the UI's POST endpoint. The UI cannot
+  drift into weaker safety rules than the CLI. Dirty refusals
+  are typed (`ui.ErrDirty`) so the endpoint maps them to 409
+  instead of a generic 400.
+- **Undo's safety check refuses, not merely warns.** The upgrade
+  brief said "warn unless --force"; the existing behaviour —
+  refuse, with `--force` to override and a warning on
+  `--dry-run` — is strictly safer and already covered by the
+  M5 end-to-end test, so it was kept and the dry-run warning
+  retained. A warning-only check would let a careless undo
+  overwrite post-session work.
+- **Telemetry nil means "not reported", never zero.** New
+  session columns (`lines_added`, `lines_deleted`,
+  `input_tokens`, `output_tokens`, `cost_usd`) are nullable and
+  migrated into old databases with ALTER TABLE, so pre-v0.2
+  sessions read back with nil telemetry instead of a fake
+  `+0 -0` / 0 tokens. Line counts are computed from the raw
+  diff before redaction: redaction collapses multi-line
+  private-key blocks into one placeholder line and would
+  otherwise undercount.
+- **Token/cost parsing is last-wins over a small pattern set.**
+  Agents print summaries in incompatible formats, so the parser
+  matches `input_tokens`/`prompt_tokens`,
+  `output_tokens`/`completion_tokens`, and `cost` + decimal
+  amount lines, taking the last occurrence of each (summaries
+  print at the end of a run). A `cost` line without a decimal
+  point is ignored so a count is never mistaken for dollars.
+  Unrecognized formats simply yield nil metrics.
+- **Clean keeps the newest N regardless of age, then VACUUMs.**
+  `--keep-last` is applied before the age cutoff, so a quiet
+  repository is never pruned to zero sessions by accident.
+  Reclaimed space is the database file size before/after
+  VACUUM (clamped at zero), alongside the stored-bytes estimate
+  of removed diffs/events, so the figure is measured, not
+  invented.
+- **UI is loopback-only standard-library HTTP.** `internal/ui`
+  embeds one static page and serves JSON over net/http; no
+  frontend build step, no external dependencies, no auth
+  surface beyond loopback binding. That is also its limit: it
+  is a single-user local inspector, not a shared service.
+- **Release automation via GoReleaser on `v*` tags.**
+  `.goreleaser.yaml` builds Linux/macOS/Windows amd64/arm64
+  with CGO disabled (modernc.org/sqlite is pure Go) and the
+  workflow runs the test suite before releasing, so a tag on a
+  red tree cannot ship binaries. `--version` is bumped to
+  `v0.2.0` with this change set, matching the next tag.
+
+## v0.2 review fixes (independent review, GO-WITH-NOTES)
+
+- **Snapshots always exclude `.env`.** Review found an unignored,
+  untracked `.env` was captured in snapshot git objects, which
+  contradicted the "`.env` file itself is never stored" claim.
+  Snapshots now always add `:!.env` and `:!**/.env` pathspecs
+  (plus the pre-existing `:!.agentledger`). A tracked `.env`
+  still contributes its committed HEAD version via read-tree,
+  but working-tree secret edits are never snapshotted.
+- **Partial undo does not mark the session undone.** `runUndo`
+  now calls `MarkUndone` only when the undo covers every
+  recorded action; a `--file` undo leaves the session status
+  accurate and a later full undo is the one that marks it.
+- **Config typos fail loudly.** Unknown top-level keys and
+  flow-style (`key: [...]`) list values are now errors in both
+  YAML and JSON (JSON uses `DisallowUnknownFields`). This
+  closes the gap between the fail-loud rationale and the old
+  silently-ignore behaviour for unknown keys.
+- **DeleteSession is transactional** (events + actions + session
+  in one transaction) so `clean` cannot leave orphaned rows on
+  failure, and the pre-v0.2 migration path now has a test that
+  opens a genuine old-schema database.
+
+## UI second iteration (anti-slop redesign)
+
+- **Navbar carries real data only.** The top bar (56px) shows the
+  brand, the repository root from `GET /api/meta`, a live
+  connection indicator (green only after a successful API fetch),
+  and the real session count. No hero banner, no decorative
+  shapes, no invented stats, and no em-dashes in UI labels.
+- **Selective undo through the same endpoint.** `POST
+  /api/sessions/{id}/undo` accepts an optional `files` array;
+  an empty/missing array means a full undo. The CLI wiring
+  passes it straight to the shared `runUndo`, so per-file
+  Revert buttons enforce the same dirty check (409) and
+  partial-undo status rules as the CLI.
+- **Keyboard navigation is list-relative.** `j`/`k` move within
+  the currently filtered list (not the full list), `/` and
+  Cmd/Ctrl+K focus the navbar filter, and `u` opens the undo
+  modal for the selected session. All shortcuts are ignored
+  while typing or while the modal is open (Escape closes it).
+
+## UI third iteration (user-supplied design)
+
+- The inspector page is now the user's own "AgentLedger // Dev
+  Inspector" design: mono font throughout, `// AGENTLEDGER`
+  brand, SYSTEM ACTIVE badge, sidebar search, Git Diffs /
+  Redacted Logs tabs, red Revert button.
+- Kept from the second iteration, not dropped with the redesign:
+  per-file diffs with collapse, Unified/Split toggle, log
+  stream filter, full and per-file revert through the same
+  undo endpoint (409 dirty handling), keyboard navigation
+  (`j`/`k`, `u`, `/`, Cmd/Ctrl+K), real repo path and session
+  count from `GET /api/meta`, no invented stats, no em-dashes.
+- The PORT label in the header is real, not hardcoded: `Server`
+  gained a `Port` field, set from the actual listener in the
+  CLI wiring and returned by `GET /api/meta`.

@@ -29,6 +29,11 @@ func execCLI(t *testing.T, args ...string) (string, error) {
 	undoFiles = nil
 	undoDryRun = false
 	undoForce = false
+	diffStat = false
+	cleanOlderThan = "30d"
+	cleanKeepLast = 10
+	cleanDryRun = false
+	uiPort = 4848
 	return buf.String(), err
 }
 
@@ -170,5 +175,65 @@ func TestUndoEndToEnd(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "new.txt")); !os.IsNotExist(err) {
 		t.Fatalf("after undo --force new.txt should be gone")
+	}
+}
+
+// TestUndoSelectiveDryRunAndShorthand covers the Phase 2 flags that
+// the main end-to-end test does not: --dry-run with --file lists the
+// exact action and touches nothing, and -f is the --file shorthand.
+func TestUndoSelectiveDryRunAndShorthand(t *testing.T) {
+	root := t.TempDir()
+	runGitE2E(t, root, "init", "-b", "main")
+	runGitE2E(t, root, "config", "user.name", "test")
+	runGitE2E(t, root, "config", "user.email", "test@localhost")
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitE2E(t, root, "add", "a.txt")
+	runGitE2E(t, root, "commit", "-m", "initial")
+	fakeSrc, err := os.ReadFile("../session/testdata/fake-agent.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	if _, err := execCLI(t, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "fake-agent.sh"), fakeSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execCLI(t, "run", "--", "./fake-agent.sh"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// Selective dry run for the added file only.
+	dryOut, err := execCLI(t, "undo", "last", "--dry-run", "--file", "new.txt")
+	if err != nil {
+		t.Fatalf("undo --dry-run --file: %v", err)
+	}
+	if !strings.Contains(dryOut, "would delete new.txt") {
+		t.Fatalf("dry-run output = %q", dryOut)
+	}
+	if _, err := os.Stat(filepath.Join(root, "new.txt")); err != nil {
+		t.Fatalf("dry run must not delete new.txt: %v", err)
+	}
+	// Shorthand -f restores only a.txt; new.txt survives.
+	if _, err := execCLI(t, "undo", "last", "-f", "a.txt"); err != nil {
+		t.Fatalf("undo -f: %v", err)
+	}
+	// A partial undo must not mark the whole session undone.
+	if logOut, err := execCLI(t, "log"); err != nil {
+		t.Fatalf("log: %v", err)
+	} else if strings.Contains(logOut, "undone") {
+		t.Fatalf("partial undo must not mark session undone: %q", logOut)
+	}
+	if got := readE2E(t, root, "a.txt"); got != "one\n" {
+		t.Fatalf("after -f undo a.txt = %q, want %q", got, "one\n")
+	}
+	if _, err := os.Stat(filepath.Join(root, "new.txt")); err != nil {
+		t.Fatalf("-f undo must not touch new.txt: %v", err)
+	}
+	// Unknown file is rejected before anything changes.
+	if _, err := execCLI(t, "undo", "last", "--file", "nope.txt"); err == nil {
+		t.Fatal("undo --file for an unchanged file should fail")
 	}
 }

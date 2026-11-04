@@ -1,11 +1,19 @@
 package redact_test
 
 import (
+	"os"
 	"strings"
 	"testing"
 
+	"agentledger/internal/config"
 	"agentledger/internal/redact"
 )
+
+// configLoad is a thin wrapper so the config package stays an
+// implementation detail of this test file's helper.
+func configLoad(dir string) (*config.Config, error) {
+	return config.Load(dir)
+}
 
 func TestRedactEachType(t *testing.T) {
 	cases := []struct {
@@ -103,5 +111,57 @@ func TestRedactDoesNotLeakOriginal(t *testing.T) {
 	out := redact.Redact("leaked " + secret)
 	if strings.Contains(out, secret) {
 		t.Fatalf("original secret still present: %q", out)
+	}
+}
+
+func TestRedactorCustomPatternAndEnvSecrets(t *testing.T) {
+	r, err := redact.NewRedactor(
+		[]redact.CustomPattern{{Name: "INTERNAL_TOKEN", Regex: `tok-[A-Za-z0-9]{16,}`}},
+		[]string{"supersecretvalue123", "tiny"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := "token tok-abcdefghijklmnop and secret supersecretvalue123 and tiny word"
+	got := r.Redact(input)
+	if !strings.Contains(got, "<REDACTED:INTERNAL_TOKEN>") {
+		t.Fatalf("custom pattern not applied: %q", got)
+	}
+	if strings.Contains(got, "supersecretvalue123") {
+		t.Fatalf("env secret leaked: %q", got)
+	}
+	if !strings.Contains(got, "<REDACTED:ENV_SECRET>") {
+		t.Fatalf("env secret placeholder missing: %q", got)
+	}
+	if !strings.Contains(got, "tiny") {
+		t.Fatalf("short values must not be masked: %q", got)
+	}
+}
+
+func TestRedactorInvalidRegexFails(t *testing.T) {
+	if _, err := redact.NewRedactor([]redact.CustomPattern{{Name: "BAD", Regex: "["}}, nil); err == nil {
+		t.Fatal("invalid custom regex should fail")
+	}
+}
+
+func TestNewFromConfigReadsEnv(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/.env", []byte("API_KEY=envsecretvalue999\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/.agentledger.yaml", []byte("redact_patterns:\n  - name: MINE\n    regex: \"mine-[0-9]+\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := configLoad(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := redact.NewFromConfig(cfg, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := r.Redact("leak envsecretvalue999 and mine-12345 here")
+	if strings.Contains(got, "envsecretvalue999") || strings.Contains(got, "mine-12345") {
+		t.Fatalf("config redaction leaked: %q", got)
 	}
 }

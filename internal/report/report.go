@@ -46,6 +46,18 @@ func WriteMarkdown(w io.Writer, sess *store.Session, actions []*store.Action, ev
 		{"Files changed", fmt.Sprintf("%d", sess.FilesChanged)},
 		{"Undone at", formatNullableTime(sess.UndoneAt)},
 	}
+	if sess.LinesAdded != nil && sess.LinesDeleted != nil {
+		fields = append(fields, struct{ k, v string }{"Lines", fmt.Sprintf("+%d -%d", *sess.LinesAdded, *sess.LinesDeleted)})
+	}
+	if sess.InputTokens != nil {
+		fields = append(fields, struct{ k, v string }{"Input tokens", fmt.Sprintf("%d", *sess.InputTokens)})
+	}
+	if sess.OutputTokens != nil {
+		fields = append(fields, struct{ k, v string }{"Output tokens", fmt.Sprintf("%d", *sess.OutputTokens)})
+	}
+	if sess.CostUSD != nil {
+		fields = append(fields, struct{ k, v string }{"Cost (USD)", fmt.Sprintf("$%.4f", *sess.CostUSD)})
+	}
 	for _, f := range fields {
 		if _, err := fmt.Fprintf(w, "- %s: %s\n", f.k, f.v); err != nil {
 			return err
@@ -88,19 +100,24 @@ func WriteMarkdown(w io.Writer, sess *store.Session, actions []*store.Action, ev
 // JSON shapes for jsonl export. One JSON object per line, in order:
 // session, then actions, then events.
 type sessionJSON struct {
-	Type         string  `json:"type"`
-	ID           string  `json:"id"`
-	Agent        string  `json:"agent"`
-	Command      string  `json:"command"`
-	Cwd          string  `json:"cwd"`
-	StartedAt    string  `json:"started_at"`
-	EndedAt      *string `json:"ended_at"`
-	DurationMs   int64   `json:"duration_ms"`
-	ExitCode     *int    `json:"exit_code"`
-	StartRef     string  `json:"start_ref"`
-	EndRef       string  `json:"end_ref"`
-	FilesChanged int     `json:"files_changed"`
-	UndoneAt     *string `json:"undone_at"`
+	Type         string   `json:"type"`
+	ID           string   `json:"id"`
+	Agent        string   `json:"agent"`
+	Command      string   `json:"command"`
+	Cwd          string   `json:"cwd"`
+	StartedAt    string   `json:"started_at"`
+	EndedAt      *string  `json:"ended_at"`
+	DurationMs   int64    `json:"duration_ms"`
+	ExitCode     *int     `json:"exit_code"`
+	StartRef     string   `json:"start_ref"`
+	EndRef       string   `json:"end_ref"`
+	FilesChanged int      `json:"files_changed"`
+	UndoneAt     *string  `json:"undone_at"`
+	LinesAdded   *int     `json:"lines_added,omitempty"`
+	LinesDeleted *int     `json:"lines_deleted,omitempty"`
+	InputTokens  *int64   `json:"input_tokens,omitempty"`
+	OutputTokens *int64   `json:"output_tokens,omitempty"`
+	CostUSD      *float64 `json:"cost_usd,omitempty"`
 }
 
 type actionJSON struct {
@@ -147,6 +164,8 @@ func WriteJSONL(w io.Writer, sess *store.Session, actions []*store.Action, event
 		Cwd: sess.Cwd, StartedAt: formatTime(sess.StartedAt), EndedAt: nullableString(sess.EndedAt),
 		DurationMs: sess.DurationMs, ExitCode: sess.ExitCode, StartRef: sess.StartRef,
 		EndRef: sess.EndRef, FilesChanged: sess.FilesChanged, UndoneAt: nullableString(sess.UndoneAt),
+		LinesAdded: sess.LinesAdded, LinesDeleted: sess.LinesDeleted,
+		InputTokens: sess.InputTokens, OutputTokens: sess.OutputTokens, CostUSD: sess.CostUSD,
 	}); err != nil {
 		return err
 	}

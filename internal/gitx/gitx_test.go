@@ -156,3 +156,78 @@ func TestSnapshotExcludesAgentledgerDir(t *testing.T) {
 		t.Fatalf("snapshot contains .agentledger:\n%s", tree)
 	}
 }
+
+func TestChangedSinceSession(t *testing.T) {
+	root := setupRepo(t)
+	startRef := "refs/agentledger/changed1/start"
+	endRef := "refs/agentledger/changed1/end"
+	if _, err := gitx.Snapshot(root, "changed1", "start"); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, "a.txt", "two\n")
+	if _, err := gitx.Snapshot(root, "changed1", "end"); err != nil {
+		t.Fatal(err)
+	}
+	check := func(want []string) {
+		t.Helper()
+		got, err := gitx.ChangedSinceSession(root, startRef, endRef, []string{"a.txt"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("ChangedSinceSession = %v, want %v", got, want)
+		}
+	}
+	// Working tree matches the end snapshot: nothing changed since.
+	check(nil)
+	// A post-session edit is reported.
+	writeFile(t, root, "a.txt", "three\n")
+	check([]string{"a.txt"})
+	// A file already restored to its start state does not block.
+	writeFile(t, root, "a.txt", "one\n")
+	check(nil)
+}
+
+func TestDiffStat(t *testing.T) {
+	diff := "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1,2 @@\n one\n+two\n-three\n+four\n"
+	added, deleted := gitx.DiffStat(diff)
+	if added != 2 || deleted != 1 {
+		t.Fatalf("DiffStat = +%d -%d, want +2 -1", added, deleted)
+	}
+	if added, deleted := gitx.DiffStat("Binary files differ\n"); added != 0 || deleted != 0 {
+		t.Fatalf("binary DiffStat = +%d -%d, want +0 -0", added, deleted)
+	}
+}
+
+func TestDeleteSessionRefs(t *testing.T) {
+	root := setupRepo(t)
+	if _, err := gitx.Snapshot(root, "del1", "start"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.Snapshot(root, "del1", "end"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitx.DeleteSessionRefs(root, "del1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.RefCommit(root, "refs/agentledger/del1/start"); err == nil {
+		t.Fatal("start ref should be deleted")
+	}
+	// Deleting again is a no-op, not an error.
+	if err := gitx.DeleteSessionRefs(root, "del1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSnapshotExcludesEnvFiles(t *testing.T) {
+	root := setupRepo(t)
+	writeFile(t, root, ".env", "SECRET=plaintextsecret123\n")
+	commit, err := gitx.Snapshot(root, "env1", "start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := runGit(t, root, "ls-tree", "-r", "--name-only", commit)
+	if strings.Contains(tree, ".env") {
+		t.Fatalf("snapshot must not contain .env:\n%s", tree)
+	}
+}

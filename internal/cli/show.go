@@ -61,6 +61,18 @@ var showCmd = &cobra.Command{
 		} {
 			fmt.Fprintf(out, ShowField+"\n", f.k, f.v)
 		}
+		if sess.LinesAdded != nil && sess.LinesDeleted != nil {
+			fmt.Fprintf(out, ShowField+"\n", "Lines", fmt.Sprintf("+%d -%d", *sess.LinesAdded, *sess.LinesDeleted))
+		}
+		if sess.InputTokens != nil {
+			fmt.Fprintf(out, ShowField+"\n", "Input tokens", fmt.Sprintf("%d", *sess.InputTokens))
+		}
+		if sess.OutputTokens != nil {
+			fmt.Fprintf(out, ShowField+"\n", "Output tokens", fmt.Sprintf("%d", *sess.OutputTokens))
+		}
+		if sess.CostUSD != nil {
+			fmt.Fprintf(out, ShowField+"\n", "Cost (USD)", fmt.Sprintf("$%.4f", *sess.CostUSD))
+		}
 		fmt.Fprintln(out, ShowFilesTitle)
 		for _, a := range actions {
 			fmt.Fprintf(out, ShowFileLine+"\n", a.Path, a.Type)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"agentledger/internal/config"
 	"agentledger/internal/gitx"
 	"agentledger/internal/redact"
 	"agentledger/internal/store"
@@ -49,19 +50,19 @@ func (w *captureWriter) lines() []string {
 
 // Config describes one wrapped run.
 type Config struct {
-	Root   string   // git repository root (snapshots happen here)
-	Cwd    string   // working directory the child runs in
-	Agent  string   // agent name recorded for the session
-	Command []string // child command, argv[0] first; must be non-empty
-	Env    []string // extra environment for the child (nil = inherit)
-	Stdout io.Writer // live stdout destination
-	Stderr io.Writer // live stderr destination
-	Store  *store.Store
+	Root    string    // git repository root (snapshots happen here)
+	Cwd     string    // working directory the child runs in
+	Agent   string    // agent name recorded for the session
+	Command []string  // child command, argv[0] first; must be non-empty
+	Env     []string  // extra environment for the child (nil = inherit)
+	Stdout  io.Writer // live stdout destination
+	Stderr  io.Writer // live stderr destination
+	Store   *store.Store
 }
 
 // Result is the recorded outcome of a run.
 type Result struct {
-	Session *store.Session
+	Session  *store.Session
 	ExitCode int
 }
 
@@ -94,16 +95,29 @@ func Run(cfg Config) (*Result, error) {
 	id := ulid.Make().String()
 	started := time.Now()
 
-	startCommit, err := gitx.Snapshot(cfg.Root, id, "start")
+	// Project configuration is loaded before anything is recorded:
+	// a malformed config fails the run rather than silently
+	// recording unredacted output, and ignore patterns apply to
+	// both snapshots and the recorded diffs.
+	cfgFile, err := config.Load(cfg.Root)
+	if err != nil {
+		return nil, fmt.Errorf("load project config: %w", err)
+	}
+	red, err := redact.NewFromConfig(cfgFile, cfg.Root)
+	if err != nil {
+		return nil, fmt.Errorf("build redactor: %w", err)
+	}
+
+	startCommit, err := gitx.SnapshotWithIgnores(cfg.Root, id, "start", cfgFile.IgnorePaths)
 	if err != nil {
 		return nil, fmt.Errorf("start snapshot failed: %w", err)
 	}
 	_ = startCommit
 	sess := &store.Session{
 		ID:        id,
-		Agent:     redact.Redact(cfg.Agent),
-		Command:   redact.Redact(strings.Join(cfg.Command, " ")),
-		Cwd:       redact.Redact(cfg.Cwd),
+		Agent:     red.Redact(cfg.Agent),
+		Command:   red.Redact(strings.Join(cfg.Command, " ")),
+		Cwd:       red.Redact(cfg.Cwd),
 		StartedAt: started,
 		StartRef:  refFor(id, "start"),
 	}
@@ -132,7 +146,7 @@ func Run(cfg Config) (*Result, error) {
 	}
 
 	ended := time.Now()
-	endCommit, err := gitx.Snapshot(cfg.Root, id, "end")
+	endCommit, err := gitx.SnapshotWithIgnores(cfg.Root, id, "end", cfgFile.IgnorePaths)
 	if err != nil {
 		return nil, fmt.Errorf("end snapshot failed: %w", err)
 	}
@@ -142,17 +156,33 @@ func Run(cfg Config) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compute file changes: %w", err)
 	}
+	// Ignore patterns are enforced at the recorded-action level even
+	// when a git pathspec could not exclude a file from the snapshot
+	// tree, so ignored files never appear in diffs or undo.
+	var kept []gitx.FileChange
+	for _, ch := range changes {
+		if !cfgFile.MatchIgnore(ch.Path) {
+			kept = append(kept, ch)
+		}
+	}
+	changes = kept
+	var linesAdded, linesDeleted int
 	for _, ch := range changes {
 		diff, err := gitx.DiffFile(cfg.Root, sess.StartRef, refFor(id, "end"), ch.Path)
 		if err != nil {
 			return nil, fmt.Errorf("diff for %s: %w", ch.Path, err)
 		}
+		// Count on the raw diff: redaction can collapse a
+		// multi-line private-key block into one placeholder line.
+		added, deleted := gitx.DiffStat(diff)
+		linesAdded += added
+		linesDeleted += deleted
 		if err := cfg.Store.CreateAction(&store.Action{
 			ID:        ulid.Make().String(),
 			SessionID: id,
 			Type:      ch.Type,
 			Path:      ch.Path,
-			Diff:      redact.Redact(diff),
+			Diff:      red.Redact(diff),
 			CreatedAt: ended,
 		}); err != nil {
 			return nil, err
@@ -161,7 +191,7 @@ func Run(cfg Config) (*Result, error) {
 	for _, line := range stdoutCap.lines() {
 		if err := cfg.Store.CreateEvent(&store.Event{
 			ID: ulid.Make().String(), SessionID: id,
-			Stream: "stdout", Line: redact.Redact(line), CreatedAt: ended,
+			Stream: "stdout", Line: red.Redact(line), CreatedAt: ended,
 		}); err != nil {
 			return nil, err
 		}
@@ -169,14 +199,18 @@ func Run(cfg Config) (*Result, error) {
 	for _, line := range stderrCap.lines() {
 		if err := cfg.Store.CreateEvent(&store.Event{
 			ID: ulid.Make().String(), SessionID: id,
-			Stream: "stderr", Line: redact.Redact(line), CreatedAt: ended,
+			Stream: "stderr", Line: red.Redact(line), CreatedAt: ended,
 		}); err != nil {
 			return nil, err
 		}
 	}
 
 	durationMs := ended.Sub(started).Milliseconds()
-	if err := cfg.Store.FinishSession(id, ended, durationMs, exitCode, refFor(id, "end"), len(changes)); err != nil {
+	// Token/cost metrics are parsed from the raw output lines: the
+	// figures are not secrets, and parsing after redaction would
+	// risk a redacted placeholder hiding a metric line.
+	metrics := ParseMetrics(append(append([]string{}, stdoutCap.lines()...), stderrCap.lines()...))
+	if err := cfg.Store.FinishSessionWithMetrics(id, ended, durationMs, exitCode, refFor(id, "end"), len(changes), &linesAdded, &linesDeleted, metrics.InputTokens, metrics.OutputTokens, metrics.CostUSD); err != nil {
 		return nil, err
 	}
 	finished, err := cfg.Store.GetSession(id)
